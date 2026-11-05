@@ -15,11 +15,12 @@ permissions:
 jobs:
   ipa:
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       FLUTTER_VERSION: 3.47.7
       FLUTTER_SHA256: dd9da574c3168460550117eb0e8dd0313ae934fabf64a82a6d557fff5fd1422e
+      DSH_IOS_ENGINE_WORK: ${{ github.workspace }}/../engine-work
 
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +31,7 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
+          python3 --version
           xcodebuild -showsdks | grep -i iphone || true
 
       - name: Install Flutter
@@ -41,6 +43,14 @@ jobs:
           echo "$FLUTTER_SHA256  $RUNNER_TEMP/$archive" | shasum -a 256 -c -
           unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare the engine
+        run: |
+          set -euo pipefail
+          python3 --version
+          bash tooling/ios/prepare-engine.sh
+          ls -la app/ios/Engine
+          test -f app/ios/Engine/.ready
 
       - name: Resolve dependencies
         run: |
@@ -61,6 +71,10 @@ jobs:
           set -euo pipefail
           APP="$(ls -d app/build/ios/iphoneos/*.app | head -1)"
           echo "app bundle: $APP"
+          echo "--- engine inside the app ---"
+          ls -1 "$APP/Frameworks" || true
+          ls -1 "$APP/dsh-runtime" || true
+          du -sh "$APP"
           rm -rf "$RUNNER_TEMP/payload"
           mkdir -p "$RUNNER_TEMP/payload/Payload"
           cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
@@ -68,10 +82,6 @@ jobs:
           zip -qry "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa" Payload
           ls -lh "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa"
           shasum -a 256 "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa"
-          echo "--- Payload ---"
-          ls -1 Payload
-          echo "--- Frameworks / plugins ---"
-          ls -1 Payload/*.app/Frameworks 2>/dev/null | head -40 || true
 
       - name: Keep the unsigned IPA
         uses: actions/upload-artifact@v4
@@ -79,4 +89,5 @@ jobs:
           name: dsh-go-ios-unsigned-ipa
           path: ${{ runner.temp }}/DSH-Go-1.0.11-ios-unsigned.ipa
           if-no-files-found: error
+          compression-level: 0
           retention-days: 7
