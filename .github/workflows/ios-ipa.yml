@@ -1,0 +1,82 @@
+name: iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/ios-ipa']
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      FLUTTER_VERSION: 3.47.7
+      FLUTTER_SHA256: dd9da574c3168460550117eb0e8dd0313ae934fabf64a82a6d557fff5fd1422e
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show the toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphone || true
+
+      - name: Install Flutter
+        run: |
+          set -euo pipefail
+          archive="flutter_macos_arm64_${FLUTTER_VERSION}-stable.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/$archive"
+          echo "$FLUTTER_SHA256  $RUNNER_TEMP/$archive" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/$archive" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve dependencies
+        run: |
+          set -euo pipefail
+          flutter --version
+          flutter config --no-analytics >/dev/null 2>&1 || true
+          python3 app/tool/l10n_merge.py --no-gen
+          cd app
+          flutter pub get --enforce-lockfile
+          flutter gen-l10n
+
+      - name: Build unsigned release
+        working-directory: app
+        run: bash ../tooling/ios/build.sh --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="$(ls -d app/build/ios/iphoneos/*.app | head -1)"
+          echo "app bundle: $APP"
+          rm -rf "$RUNNER_TEMP/payload"
+          mkdir -p "$RUNNER_TEMP/payload/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/payload/Payload/"
+          cd "$RUNNER_TEMP/payload"
+          zip -qry "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa" Payload
+          ls -lh "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa"
+          shasum -a 256 "$RUNNER_TEMP/DSH-Go-1.0.11-ios-unsigned.ipa"
+          echo "--- Payload ---"
+          ls -1 Payload
+          echo "--- Frameworks / plugins ---"
+          ls -1 Payload/*.app/Frameworks 2>/dev/null | head -40 || true
+
+      - name: Keep the unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-go-ios-unsigned-ipa
+          path: ${{ runner.temp }}/DSH-Go-1.0.11-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
